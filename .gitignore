@@ -3,3 +3,7 @@ ckpt/
 __pycache__/
 */__pycache__/
 additional
+.venv/
+.DS_Store
+scores.npy
+a3c.gif
