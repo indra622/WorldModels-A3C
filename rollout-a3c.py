@@ -8,8 +8,6 @@ from tqdm import trange
 import pandas as pd
 import matplotlib.pyplot as plt
 import os, glob, sys
-import gym
-import gym.envs.box2d
 import cv2
 
 import torch
@@ -25,6 +23,7 @@ from models import *
 
 from collections import namedtuple
 from hparams import HyperParams as hp
+from env_compat import make_carracing_env, reset_env, set_global_seed, step_env
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'reward', 'next_state'))
@@ -33,6 +32,7 @@ Transition = namedtuple('Transition',
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
 logdir = 'logs'
+enable_render = os.getenv('ENABLE_RENDER', '0').lower() in ('1', 'true', 'yes', 'on')
 
 # gym.envs.box2d.car_racing.STATE_W, gym.envs.box2d.car_racing.STATE_H = 64, 64
 
@@ -52,8 +52,7 @@ def obs2tensor(obs):
     s = binary_road.flatten()
     s = torch.tensor(s.reshape([1, -1]), dtype=torch.float)
     obs = np.ascontiguousarray(obs)
-    # obs = torch.tensor(obs, dtype=torch.float)
-    obs = transform(obs).unsqueeze(0)
+    obs = torch.from_numpy(obs).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
     return obs.to(device), s.to(device)
 
 
@@ -66,18 +65,16 @@ def obs2feature(s):
     return upper_field_bw
 
 
-def set_seed(seed, env=None):
-    if env is not None:
-        env.seed(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+def set_seed(seed):
+    set_global_seed(seed)
 
 def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr, device=None, seed=0):
-    env = gym.make('CarRacing-v0')
-    set_seed(seed, env=env)
-    env.verbose = 0
-    env.render()
+    env = make_carracing_env(render_mode='human' if enable_render else None)
+    set_seed(seed)
+    if hasattr(env.unwrapped, 'verbose'):
+        env.unwrapped.verbose = 0
+    if enable_render:
+        env.render()
     agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
     
     scores = [-100,]
@@ -89,15 +86,26 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
     feat_dir = hp.extra_dir
     os.makedirs(feat_dir, exist_ok=True)
 
+    pdict = {
+        'agent': agent,
+        'scores': scores,
+        'avgs': running_means,
+        'step': step,
+        'n_episodes': -1,
+        'seed': seed,
+        'update_term': update_term,
+    }
     for ep in range(200, 200+test_ep):
         agent.load_state_dict(global_agent.state_dict())
-        env.reset()
+        reset_env(env, seed=seed + ep)
         score = 0.
         t = 0
+        next_obs = np.zeros((hp.img_height, hp.img_width, hp.img_channels), dtype=np.uint8)
         next_hidden = [torch.zeros(1, 1, hp.rnn_hunits).to(device) for _ in range(2)]
         for _ in range(5):
-            env.render()
-            next_obs, reward, done, _ = env.step(agent.possible_actions[-2])
+            if enable_render:
+                env.render()
+            next_obs, reward, done, _ = step_env(env, agent.possible_actions[-2])
             score += reward
         next_obs_tensor, next_s = obs2tensor(next_obs)
         with torch.no_grad():
@@ -110,7 +118,8 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
         done_lst = []
 
         while True:
-            env.render()
+            if enable_render:
+                env.render()
             obs = next_obs
             obs_tensor = next_obs_tensor
             s = next_s
@@ -125,7 +134,7 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
                 state = torch.cat([latent_mu, hidden[0].squeeze(0)], dim=1)
 
             action, _ = agent.select_action(state) # nparray, tensor
-            next_obs, reward, done, _ = env.step(action.reshape([-1]))
+            next_obs, reward, done, _ = step_env(env, action.reshape([-1]))
             np.savez(
                 os.path.join(feat_dir, 'rollout_{:03d}_{:04d}'.format(ep, t)),
                 obs=obs,
@@ -207,44 +216,40 @@ def save_ckpt(info, filename, root='ckpt', add_prefix=None, save_model=True):
     plt.savefig('{}/scores-{}.png'.format(ckpt_dir, filename))
 
 
-# ### V model & M model
+def main():
+    global test_ep
+    vae_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'vae', '*.pth.tar')))[-1]
+    vae_state = torch.load(vae_path, map_location={'cuda:0': str(device)})
 
-vae_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'vae', '*.pth.tar')))[-1]
-vae_state = torch.load(vae_path, map_location={'cuda:0': str(device)})
+    rnn_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'rnn', '*.pth.tar')))[-1]
+    rnn_state = torch.load(rnn_path, map_location={'cuda:0': str(device)})
 
-rnn_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'rnn', '*.pth.tar')))[-1]
-rnn_state = torch.load(rnn_path, map_location={'cuda:0': str(device)})
+    agent_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'A3C', '*.pth.tar')))[-1]
+    agent_state = torch.load(agent_path, map_location={'cuda:0': str(device)})
 
-agent_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'A3C', '*.pth.tar')))[-1]
-agent_state = torch.load(agent_path, map_location={'cuda:0': str(device)})
+    vae = VAE(hp.vsize).to(device)
+    vae.load_state_dict(vae_state['model'])
+    vae.eval()
 
-vae = VAE(hp.vsize).to(device)
-vae.load_state_dict(vae_state['model'])
-vae.eval()
+    rnn = RNN(hp.vsize, hp.asize, hp.rnn_hunits).to(device)
+    rnn.load_state_dict(rnn_state['model'])
+    rnn.eval()
 
-# rnn = MDNRNN(hp.vsize, hp.asize, hp.rnn_hunits, hp.n_gaussians).to(device)
-rnn = RNN(hp.vsize, hp.asize, hp.rnn_hunits).to(device)
-rnn.load_state_dict(rnn_state['model'])
-# mdnrnn.load_state_dict({k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
-rnn.eval()
+    print('Loaded VAE: {}\n RNN: {}\n Agent: {}\n'.format(vae_path, rnn_path, agent_path))
 
-print('Loaded VAE: {}\n RNN: {}\n Agent: {}\n'.format(vae_path, rnn_path, agent_path))
+    test_ep = int(os.getenv('ROLLOUT_A3C_TEST_EP', '300'))
+    state_dims = hp.vsize + hp.rnn_hunits + 100 if hp.use_binary_feature else hp.vsize + hp.rnn_hunits
+    hidden_dims = 512
+    lr = 1e-4
 
-# ###  Environment
+    global_agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
+    global_agent.share_memory()
+    global_agent.load_state_dict(agent_state['agent'].state_dict())
 
-total_infos = []
-test_ep = 300
+    p = mp.Process(target=test_process, args=(global_agent, vae, rnn, 0, 0, state_dims, hidden_dims, lr,))
+    p.start()
+    p.join()
 
-state_dims = hp.vsize + hp.rnn_hunits + 100 if hp.use_binary_feature else hp.vsize + hp.rnn_hunits
-hidden_dims = 512
-lr = 1e-4
 
-global_agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
-global_agent.share_memory()
-# import pdb; pdb.set_trace()
-global_agent.load_state_dict(agent_state['agent'].state_dict())
-
-p = mp.Process(target=test_process, args=(global_agent, vae, rnn, 0, 0, state_dims, hidden_dims, lr,))
-p.start()
-p.join()
-
+if __name__ == '__main__':
+    main()

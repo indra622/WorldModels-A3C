@@ -8,8 +8,6 @@ from tqdm import trange
 import pandas as pd
 import matplotlib.pyplot as plt
 import os, glob, sys
-import gym
-import gym.envs.box2d
 import cv2
 
 import torch
@@ -25,9 +23,9 @@ from models import *
 
 from collections import namedtuple
 from hparams import HyperParams as hp
+from env_compat import make_carracing_env, reset_env, set_global_seed, step_env
 
-from array2gif import write_gif
-import PIL
+from PIL import Image
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'reward', 'next_state'))
@@ -44,7 +42,7 @@ def obs2tensor(obs):
     s = binary_road.flatten()
     s = torch.tensor(s.reshape([1, -1]), dtype=torch.float)
     obs = np.ascontiguousarray(obs)
-    obs = transform(obs).unsqueeze(0)
+    obs = torch.from_numpy(obs).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
     return obs.to(device), s.to(device)
 
 def obs2feature(s):
@@ -56,34 +54,39 @@ def obs2feature(s):
     return upper_field_bw
 
 def set_seed(seed, env=None):
-    if env is not None:
-        env.seed(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    set_global_seed(seed)
 
-def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr, n_play=1, seed=0):
-    env = gym.make('CarRacing-v0')
-    set_seed(seed, env=env)
-    env.verbose = 0
-    env.render()
+def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr, n_play=1, seed=0, record=False):
+    env = make_carracing_env(render_mode='rgb_array' if record else None)
+    set_seed(seed)
+    if hasattr(env.unwrapped, 'verbose'):
+        env.unwrapped.verbose = 0
     agent = global_agent
     
     scores = []
     step = 0
+    best_gif = []
+    pdict = {
+        'agent': agent,
+        'scores': scores,
+        'avgs': 0.0,
+        'step': step,
+        'n_episodes': -1,
+        'seed': seed,
+        'update_term': update_term,
+    }
     for ep in range(n_play):
         gif = []
-        env.reset()
+        reset_env(env, seed=seed + ep)
         score = 0.
         i = 0
+        next_obs = np.zeros((hp.img_height, hp.img_width, hp.img_channels), dtype=np.uint8)
         next_hidden = [torch.zeros(1, 1, hp.rnn_hunits).to(device) for _ in range(2)]
         for _ in range(5):
-            if not record:
-                env.render()
-            else:
-                img = env.render(mode='rgb_array')
+            if record:
+                img = env.render()
                 gif.append(img)
-            next_obs, reward, done, _ = env.step(agent.possible_actions[-2])
+            next_obs, reward, done, _ = step_env(env, agent.possible_actions[-2])
             score += reward
         next_obs, next_s = obs2tensor(next_obs)
         with torch.no_grad():
@@ -91,10 +94,8 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
         
 
         while True:
-            if not record:
-                env.render()
-            else:
-                img = env.render(mode='rgb_array')
+            if record:
+                img = env.render()
                 gif.append(img)
 
             obs = next_obs
@@ -110,7 +111,7 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
                 state = torch.cat([latent_mu, hidden[0].squeeze(0)], dim=1)
 
             action, _ = agent.select_action(state) # nparray, tensor
-            next_obs, reward, done, _ = env.step(action.reshape([-1]))
+            next_obs, reward, done, _ = step_env(env, action.reshape([-1]))
 
             with torch.no_grad():
                 next_obs, next_s = obs2tensor(next_obs)
@@ -199,12 +200,9 @@ def play(n_play, seed, record):
     _, gif = test_process(global_agent, vae, rnn, 0, 0, state_dims, hidden_dims, lr, n_play, seed, record)
     
     if record:
-        gif = list(
-            map(lambda img: np.array(PIL.Image.fromarray(img[::2, ::2, :], 'RGB')\
-                ).transpose([2,0,1]),
-                gif)
-        )
-        write_gif(gif, 'a3c.gif', fps=30)
+        frames = [Image.fromarray(img[::2, ::2, :], 'RGB') for img in gif]
+        if frames:
+            frames[0].save('a3c.gif', save_all=True, append_images=frames[1:], duration=33, loop=0)
 
 
 if __name__ == '__main__':

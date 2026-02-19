@@ -1,12 +1,12 @@
 import numpy as np
 import os, sys, glob
-import gym
 from hparams import HyperParams as hp
+from env_compat import make_carracing_env, reset_env, set_global_seed, step_env
 
 def rollout():
-    env = gym.make("CarRacing-v0")
+    env = make_carracing_env()
 
-    seq_len = 1000
+    seq_len = hp.seq_len
     max_ep = hp.n_rollout
     feat_dir = hp.data_dir
 
@@ -14,17 +14,17 @@ def rollout():
 
     for ep in range(max_ep):
         obs_lst, action_lst, reward_lst, next_obs_lst, done_lst = [], [], [], [], []
-        env.reset()
+        reset_env(env)
         action = env.action_space.sample()
-        obs, reward, done, _ = env.step(action)
+        obs, reward, done, _ = step_env(env, action)
         done = False
         t = 0
         
-        while not done or t < seq_len:
+        while (not done) and (t < seq_len):
             t += 1
 
             action = env.action_space.sample()
-            next_obs, reward, done, _ = env.step(action)
+            next_obs, reward, done, _ = step_env(env, action)
 
             np.savez(
                 os.path.join(feat_dir, 'rollout_{:03d}_{:04d}'.format(ep,t)),
@@ -53,5 +53,5 @@ def rollout():
         
 
 if __name__ == '__main__':
-    np.random.seed(hp.seed)
+    set_global_seed(hp.seed)
     rollout()

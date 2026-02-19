@@ -85,7 +85,7 @@ def train():
                     with open(os.path.join(ckpt_dir, 'train.log'), 'a') as f:
                         log = '{} || Step: {}, train_loss: {:.4f}, loss: {:.4f}\n'.format(now, global_step, loss.item(), eval_loss)
                         f.write(log)
-                    S = 2
+                    S = min(2, x.shape[0] - 1)
                     y = vae.decoder(x[S, :, :])
                     v = vae.decoder(next_z[S, :, :])
                     save_image(y, os.path.join(sample_dir, '{:04d}-rnn.png'.format(global_step)))
@@ -123,6 +123,8 @@ def evaluate(test_loader, vae, rnn, global_step=0):
  
             total_loss.append(loss.item())
     rnn.train()
+    if not total_loss:
+        return 0.0
     return np.mean(total_loss)
 
 

@@ -15,6 +15,8 @@ class GameSceneDataset(torch.utils.data.Dataset):
         np.random.seed(0)
         indices = np.arange(0, len(self.fpaths))
         n_trainset = int(len(indices)*(1.0-test_ratio))
+        if len(indices) > 1:
+            n_trainset = max(1, min(len(indices) - 1, n_trainset))
         self.train_indices = indices[:n_trainset]
         self.test_indices = indices[n_trainset:]
         # self.train_indices = np.random.choice(indices, int(len(indices)*(1.0-test_ratio)), replace=False)
@@ -39,6 +41,8 @@ class GameEpisodeDataset(torch.utils.data.Dataset):
         np.random.seed(0)
         indices = np.arange(0, len(self.fpaths))
         n_trainset = int(len(indices)*(1.0-test_ratio))
+        if len(indices) > 1:
+            n_trainset = max(1, min(len(indices) - 1, n_trainset))
         self.train_indices = indices[:n_trainset]
         self.test_indices = indices[n_trainset:]
         # self.train_indices = np.random.choice(indices, int(len(indices)*(1.0-test_ratio)), replace=False)

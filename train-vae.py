@@ -90,10 +90,13 @@ def evaluate(test_loader, model, sample_dir=None, global_step=0):
             total_kld_loss.append(kld.item())
         z = torch.randn([n_sample, hp.vsize]).to(DEVICE)
         x_rand = model.decoder(z)
-    save_image(x_rand, os.path.join(sample_dir, '{:04d}k-random.png'.format(global_step//1000)))
-    save_image(c_x_hat, os.path.join(sample_dir, '{:04d}k-xhat.png'.format(global_step//1000)))
-    save_image(c_x, os.path.join(sample_dir, '{:04d}k-x.png'.format(global_step//1000)))
+    if sample_dir is not None:
+        save_image(x_rand, os.path.join(sample_dir, '{:04d}k-random.png'.format(global_step//1000)))
+        save_image(c_x_hat, os.path.join(sample_dir, '{:04d}k-xhat.png'.format(global_step//1000)))
+        save_image(c_x, os.path.join(sample_dir, '{:04d}k-x.png'.format(global_step//1000)))
     model.train()
+    if not total_recon_loss:
+        return 0.0, 0.0
     return np.mean(total_recon_loss), np.mean(total_kld_loss)
 
 

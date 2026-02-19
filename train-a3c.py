@@ -8,8 +8,6 @@ from tqdm import trange
 import pandas as pd
 import matplotlib.pyplot as plt
 import os, glob, sys
-import gym
-import gym.envs.box2d
 import cv2
 
 import torch
@@ -25,6 +23,7 @@ from models import *
 
 from collections import namedtuple
 from hparams import HyperParams as hp
+from env_compat import make_carracing_env, reset_env, set_global_seed, step_env
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'reward', 'next_state'))
@@ -33,6 +32,7 @@ Transition = namedtuple('Transition',
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device = 'cpu'
 logdir = 'logs'
+enable_render = os.getenv('ENABLE_RENDER', '0').lower() in ('1', 'true', 'yes', 'on')
 
 MAX_R = 1.
 
@@ -48,8 +48,7 @@ def obs2tensor(obs):
     s = binary_road.flatten()
     s = torch.tensor(s.reshape([1, -1]), dtype=torch.float)
     obs = np.ascontiguousarray(obs)
-    # obs = torch.tensor(obs, dtype=torch.float)
-    obs = transform(obs).unsqueeze(0)
+    obs = torch.from_numpy(obs).permute(2, 0, 1).float().div(255.0).unsqueeze(0)
     return obs.to(device), s.to(device)
 
 
@@ -62,17 +61,14 @@ def obs2feature(s):
     return upper_field_bw
 
 
-def set_seed(seed, env=None):
-    if env is not None:
-        env.seed(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+def set_seed(seed):
+    set_global_seed(seed)
 
-def train_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr, device=None, seed=0):
+def train_process(global_agent, vae, rnn, update_term, max_ep, pid, state_dims, hidden_dims, lr, device=None, seed=0):
     set_seed(seed)
-    env = gym.make('CarRacing-v0')
-    env.verbose = 0
+    env = make_carracing_env()
+    if hasattr(env.unwrapped, 'verbose'):
+        env.unwrapped.verbose = 0
 #     time_limit = 1000
 #     env.render()
     agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
@@ -81,14 +77,16 @@ def train_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_d
     scores = [-100,]
     running_means = []
     step = 0
+    ep = -1
     for ep in range(max_ep):
-        obs = env.reset()
+        obs = reset_env(env, seed=seed + ep)
         score = 0.
         i = 0
+        next_obs = obs
         next_hidden = [torch.zeros(1, 1, hp.rnn_hunits).to(device) for _ in range(2)]
         for _ in range(5):
             # env.render()
-            next_obs, reward, done, _ = env.step(agent.possible_actions[-2])
+            next_obs, reward, done, _ = step_env(env, agent.possible_actions[-2])
             score += reward
         next_obs, next_s = obs2tensor(next_obs)
         # print(next_obs.shape)
@@ -109,7 +107,7 @@ def train_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_d
             
             action, p = agent.select_action(state) # nparray, tensor
 
-            next_obs, reward, done, _ = env.step(action.reshape([-1]))
+            next_obs, reward, done, _ = step_env(env, action.reshape([-1]))
 
             with torch.no_grad():
                 next_obs, next_s = obs2tensor(next_obs)
@@ -176,11 +174,13 @@ def train_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_d
     env.close()
     return pdict
 
-def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr, device=None, seed=0):
-    env = gym.make('CarRacing-v0')
-    set_seed(seed, env=env)
-    env.verbose = 0
-    env.render()
+def test_process(global_agent, vae, rnn, update_term, test_ep, pid, state_dims, hidden_dims, lr, device=None, seed=0):
+    env = make_carracing_env(render_mode='human' if enable_render else None)
+    set_seed(seed)
+    if hasattr(env.unwrapped, 'verbose'):
+        env.unwrapped.verbose = 0
+    if enable_render:
+        env.render()
     agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
     
     scores = [-100,]
@@ -189,15 +189,28 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
     step = 0
     worse = 0
     best_agent_state = None
+    ep = -1
+    score = 0.0
+    pdict = {
+        'agent': agent,
+        'scores': scores,
+        'avgs': running_means,
+        'step': step,
+        'n_episodes': ep,
+        'seed': seed,
+        'update_term': update_term,
+    }
     for ep in range(test_ep):
         agent.load_state_dict(global_agent.state_dict())
-        env.reset()
+        reset_env(env, seed=seed + ep)
         score = 0.
         i = 0
+        next_obs = np.zeros((hp.img_height, hp.img_width, hp.img_channels), dtype=np.uint8)
         next_hidden = [torch.zeros(1, 1, hp.rnn_hunits).to(device) for _ in range(2)]
         for _ in range(5):
-            env.render()
-            next_obs, reward, done, _ = env.step(agent.possible_actions[-2])
+            if enable_render:
+                env.render()
+            next_obs, reward, done, _ = step_env(env, agent.possible_actions[-2])
             score += reward
         next_obs, next_s = obs2tensor(next_obs)
         with torch.no_grad():
@@ -205,7 +218,8 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
         
 
         while True:
-            env.render()
+            if enable_render:
+                env.render()
             obs = next_obs
             s = next_s
             hidden = next_hidden
@@ -219,7 +233,7 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
                 state = torch.cat([latent_mu, hidden[0].squeeze(0)], dim=1)
 
             action, _ = agent.select_action(state) # nparray, tensor
-            next_obs, reward, done, _ = env.step(action.reshape([-1]))
+            next_obs, reward, done, _ = step_env(env, action.reshape([-1]))
 
             with torch.no_grad():
                 next_obs, next_s = obs2tensor(next_obs)
@@ -303,51 +317,48 @@ def save_means_plot(infos, add_prefix=None, root='ckpt'):
     plt.savefig('{}/total-scores.png'.format(ckpt_dir))
 
 
-# ### V model & M model
+def main():
+    vae_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'vae', '*.pth.tar')))[-1]
+    vae_state = torch.load(vae_path, map_location={'cuda:0': str(device)})
 
-vae_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'vae', '*.pth.tar')))[-1]
-vae_state = torch.load(vae_path, map_location={'cuda:0': str(device)})
+    rnn_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'rnn', '*.pth.tar')))[-1]
+    rnn_state = torch.load(rnn_path, map_location={'cuda:0': str(device)})
 
-rnn_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'rnn', '*.pth.tar')))[-1]
-rnn_state = torch.load(rnn_path, map_location={'cuda:0': str(device)})
+    vae = VAE(hp.vsize).to(device)
+    vae.load_state_dict(vae_state['model'])
+    vae.eval()
 
-vae = VAE(hp.vsize).to(device)
-vae.load_state_dict(vae_state['model'])
-vae.eval()
+    rnn = RNN(hp.vsize, hp.asize, hp.rnn_hunits).to(device)
+    rnn.load_state_dict(rnn_state['model'])
+    rnn.eval()
 
-# rnn = MDNRNN(hp.vsize, hp.asize, hp.rnn_hunits, hp.n_gaussians).to(device)
-rnn = RNN(hp.vsize, hp.asize, hp.rnn_hunits).to(device)
-rnn.load_state_dict(rnn_state['model'])
-# mdnrnn.load_state_dict({k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
-rnn.eval()
+    print('Loaded VAE: {}, RNN: {}'.format(vae_path, rnn_path))
 
-print('Loaded VAE: {}, RNN: {}'.format(vae_path, rnn_path))
+    max_ep = hp.max_ep * 2
+    test_ep = hp.max_ep
 
-# ###  Environment
+    state_dims = hp.vsize + hp.rnn_hunits + 100 if hp.use_binary_feature else hp.vsize + hp.rnn_hunits
+    hidden_dims = hp.ctrl_hidden_dims
+    lr = 1e-4
 
-total_infos = []
-max_ep = hp.max_ep*2
-test_ep = hp.max_ep
+    global_agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
+    global_agent.share_memory()
 
-state_dims = hp.vsize + hp.rnn_hunits + 100 if hp.use_binary_feature else hp.vsize + hp.rnn_hunits
-hidden_dims = hp.ctrl_hidden_dims
-lr = 1e-4
+    update_term = int(os.getenv('A3C_UPDATE_TERM', '100'))
+    n_processes = int(os.getenv('A3C_N_PROCESSES', '3'))
+    processes = []
 
-global_agent = A3C(input_dims=state_dims, hidden_dims=hidden_dims, lr=lr).to(device)
-global_agent.share_memory()
+    for pid in range(n_processes + 1):
+        if pid == 0:
+            p = mp.Process(target=test_process, args=(global_agent, vae, rnn, update_term, test_ep, pid, state_dims, hidden_dims, lr,))
+        else:
+            p = mp.Process(target=train_process, args=(global_agent, vae, rnn, update_term, max_ep, pid, state_dims, hidden_dims, lr,))
+        p.start()
+        processes.append(p)
 
-update_term = 100
-n_processes = 3
-processes = []
+    for p in processes:
+        p.join()
 
-for pid in range(n_processes+1):
-    if pid == 0:
-        p = mp.Process(target=test_process, args=(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr,))
-    else:
-        p = mp.Process(target=train_process, args=(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr,))
-    p.start()
-    processes.append(p)
 
-for p in processes:
-    p.join()
-
+if __name__ == '__main__':
+    main()
