@@ -29,6 +29,16 @@ export A3C_UPDATE_TERM="${A3C_UPDATE_TERM:-100}"
 echo "[1/4] Generating additional rollout data with pretrained controller"
 python rollout-a3c.py
 
+if ! compgen -G "${HP_EXTRA_DIR}/rollout_[0-9][0-9][0-9]_*.npz" >/dev/null; then
+  echo "No additional rollout scene files found in ${HP_EXTRA_DIR}" >&2
+  exit 1
+fi
+
+if ! compgen -G "${HP_EXTRA_DIR}/rollout_ep_*.npz" >/dev/null; then
+  echo "No additional rollout episode files found in ${HP_EXTRA_DIR}" >&2
+  exit 1
+fi
+
 echo "[2/4] Fine-tuning VAE on additional data"
 python train-vae.py
 

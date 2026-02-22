@@ -30,12 +30,16 @@ def train():
 
     data_path = hp.data_dir if not hp.extra else hp.extra_dir
     dataset = GameSceneDataset(data_path)
+    if len(dataset) == 0:
+        raise RuntimeError('No rollout scene data found in {}. Run rollout generation first.'.format(data_path))
     loader = DataLoader(
         dataset, batch_size=hp.batch_size, shuffle=True,
         num_workers=hp.n_workers,
     )
     testset = GameSceneDataset(data_path, training=False)
-    test_loader = DataLoader(testset, batch_size=hp.test_batch, shuffle=False, drop_last=True)
+    test_loader = None
+    if len(testset) > 0:
+        test_loader = DataLoader(testset, batch_size=hp.test_batch, shuffle=False, drop_last=True)
 
     ckpt_dir = os.path.join(hp.ckpt_dir, 'vae')
     sample_dir = os.path.join(ckpt_dir, 'samples')
@@ -70,6 +74,8 @@ def train():
             global_step += 1
 
 def evaluate(test_loader, model, sample_dir=None, global_step=0):
+    if test_loader is None:
+        return 0.0, 0.0
     model.eval()
     total_recon_loss = []
     total_kld_loss = []

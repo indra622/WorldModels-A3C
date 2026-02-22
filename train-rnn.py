@@ -38,14 +38,18 @@ def train():
     # optimizer = torch.optim.RMSprop(rnn.parameters(), lr=1e-3)
     optimizer = torch.optim.Adam(rnn.parameters(), lr=1e-4)
     dataset = GameEpisodeDataset(data_path, seq_len=hp.seq_len)
+    if len(dataset) == 0:
+        raise RuntimeError('No rollout episode data found in {}. Run rollout generation first.'.format(data_path))
     loader = DataLoader(
         dataset, batch_size=1, shuffle=True, drop_last=True,
         num_workers=hp.n_workers, collate_fn=collate_fn
     )
     testset = GameEpisodeDataset(data_path, seq_len=hp.seq_len, training=False)
-    test_loader = DataLoader(
-        testset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn
-    )
+    test_loader = None
+    if len(testset) > 0:
+        test_loader = DataLoader(
+            testset, batch_size=1, shuffle=False, drop_last=False, collate_fn=collate_fn
+        )
 
     ckpt_dir = os.path.join(hp.ckpt_dir, 'rnn')
     sample_dir = os.path.join(ckpt_dir, 'samples')
@@ -102,6 +106,8 @@ def train():
                     )
 
 def evaluate(test_loader, vae, rnn, global_step=0):
+    if test_loader is None:
+        return 0.0
     rnn.eval()
     total_loss = []
     l1 = nn.L1Loss()

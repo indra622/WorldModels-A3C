@@ -68,7 +68,7 @@ def obs2feature(s):
 def set_seed(seed):
     set_global_seed(seed)
 
-def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_dims, lr, device=None, seed=0):
+def test_process(global_agent, vae, rnn, update_term, test_ep, pid, state_dims, hidden_dims, lr, device=None, seed=0):
     env = make_carracing_env(render_mode='human' if enable_render else None)
     set_seed(seed)
     if hasattr(env.unwrapped, 'verbose'):
@@ -95,7 +95,7 @@ def test_process(global_agent, vae, rnn, update_term, pid, state_dims, hidden_di
         'seed': seed,
         'update_term': update_term,
     }
-    for ep in range(200, 200+test_ep):
+    for ep in range(200, 200 + test_ep):
         agent.load_state_dict(global_agent.state_dict())
         reset_env(env, seed=seed + ep)
         score = 0.
@@ -217,7 +217,6 @@ def save_ckpt(info, filename, root='ckpt', add_prefix=None, save_model=True):
 
 
 def main():
-    global test_ep
     vae_path = sorted(glob.glob(os.path.join(hp.ckpt_dir, 'vae', '*.pth.tar')))[-1]
     vae_state = torch.load(vae_path, map_location={'cuda:0': str(device)})
 
@@ -246,9 +245,11 @@ def main():
     global_agent.share_memory()
     global_agent.load_state_dict(agent_state['agent'].state_dict())
 
-    p = mp.Process(target=test_process, args=(global_agent, vae, rnn, 0, 0, state_dims, hidden_dims, lr,))
+    p = mp.Process(target=test_process, args=(global_agent, vae, rnn, 0, test_ep, 0, state_dims, hidden_dims, lr,))
     p.start()
     p.join()
+    if p.exitcode != 0:
+        raise RuntimeError('rollout-a3c subprocess failed with exit code {}'.format(p.exitcode))
 
 
 if __name__ == '__main__':
